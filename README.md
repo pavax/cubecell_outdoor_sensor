@@ -4,32 +4,39 @@
 
 **Microcontroller**
 
-I'm using the Heltec Cubecell AB-02 Microcontroller. It is fantastic for outdoor Lorawan projects as it consumes only 10uA when it sleeps and comes out-of-the-box with a solar-charging capability. 
+I'm using the Heltec Cubecell AB-02 Microcontroller. It is fantastic for outdoor Lorawan projects as it consumes only 10uA when it sleeps and comes out-of-the-box with a solar-charging capability.
+It also has a build in mechanism (High-Side Mosfet Switch) to turn the power-line to the sensors on and off. 
+
  *  https://resource.heltec.cn/download/CubeCell/HTCC-AB02/HTCC-AB02_PinoutDiagram.pdf
 
 **Sensors**
 
-This project uses the following sensors and uses the fabulous Cubecell AB-02 Microcontroller. 
+This project uses the following sensors:
 
  * MB7374: Ultrasonic Distance Sensor
 	 * Used to measure the snow-depth
 	 * Protocol: Serial
-	 *  https://maxbotix.com/products/mb7374
+	 * https://maxbotix.com/products/mb7374
+
  * RG-15: Rain Sensor 
-	 * This is an optical rain Tipping buck sensor. It measures the amount and intensity of rain.
+	 * This is an optical rain tipping bucket sensor. It measures the amount and intensity of rain.
 	 * Protocol: Serial
 	 * https://rainsensors.com/products/rg-15/
+
  * Wind Speed Sensor 
-	 * Protocol: Analog 0-4V (Needs voltage divider to output max 2.4V for Analog Input)
+   * The Wind-Speed is measured every 60sec. The median and max values are send at every duty Cycle.
+	 * Protocol: Analog 0-4V (Needs voltage divider to output max 2.4V for the adc input)
 	 * https://www.aliexpress.com/item/1005002627447076.html
+
  * Wind Direction Sensor
-	 * Protocol: Analog 0-5V (Needs voltage divider to output max 2.4V for Analog Input))
+	 * Protocol: Analog 0-5V (Needs voltage divider to output max 2.4V for the adc input))
 	 * https://www.aliexpress.com/item/1005006845253011.html
+
  * SHT-40: Temperatur and Humidity Sensor
 	 * Protocol: I2C
+
  * BME-280: Temperatur, Humidity and Pressure Sensor
 	 *  Protocol: I2C
-
 
 ## Downlink Commands
 
