@@ -3,10 +3,12 @@
 ## Setup
 
 **Microcontroller**
+
 I'm using the Heltec Cubecell AB-02 Microcontroller. It is fantastic for outdoor Lorawan projects as it consumes only 10uA when it sleeps and comes out-of-the-box with a solar-charging capability. 
  *  https://resource.heltec.cn/download/CubeCell/HTCC-AB02/HTCC-AB02_PinoutDiagram.pdf
 
 **Sensors**
+
 This project uses the following sensors and uses the fabulous Cubecell AB-02 Microcontroller. 
 
  * MB7374: Ultrasonic Distance Sensor
