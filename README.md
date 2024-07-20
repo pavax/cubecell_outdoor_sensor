@@ -1,3 +1,4 @@
+
 # Cubecell Lorawan Weather Station
 
 ## Setup
@@ -42,10 +43,10 @@ This project uses the following sensors:
 
 Important: Send Payload withouth the '0x' prefix.
 
-| Port | Command 	                                  | Payload Examples
-|------|--------------------------------------------|-------------------------------------------------------------------|
-|  4   | Set the Duty Cycle Time                    | 0x003C -> every 1 minute <br> 0x0078 -> every 2 minute <br> 0x012C -> every 5 minute <br> 0x0258 -> every 10 minutes <br> 0x0384 -> every 15 minutes <br> 0x04B0 -> every 20 minutes
-|  5   | Turn the RGB Light on/off                  | 0x1111 -> turn the light on <br> 0x0000 -> turn the light off
-|  6   | Send a Serial-Command to the Rain Sensor   | 0x1111 -> turn the light on <br> 0x0000 -> turn the light off
-|  7   | Send a Serial-Command to the Rain Sensor   | 0x006B -> send the 'k' command
-|  9   | Restart the Microcontroller                | - 
+| Port | Command 	                                                 | Payload Examples
+|------|-----------------------------------------------------------|-------------------------------------------------------------------|
+|  4   | Set the Duty Cycle time [seconds]                         | 0x003C -> every 1 minute <br> 0x0078 -> every 2 minutes <br> 0x012C -> every 5 minutes <br> 0x0258 -> every 10 minutes <br> 0x0384 -> every 15 minutes <br> 0x04B0 -> every 20 minutes
+|  5   | Turn the RGB Light on/off                                 | 0x1111 -> turn the light on <br> 0x0000 -> turn the light off
+|  6   | Send a Serial-Command to the Rain Sensor                  | 0x006B -> send the 'k' command
+|  7   | Set the background measurements interval time [seconds]   | 0x001E -> every 30 seconds <br> 0x003C -> every 1 minute <br> 0x0078 -> every 2 minutes
+|  9   | Restart the Microcontroller                               | - 
