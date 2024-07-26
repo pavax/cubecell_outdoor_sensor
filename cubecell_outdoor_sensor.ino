@@ -7,7 +7,7 @@
 #include "HT_SH1107Wire.h"
 #include "Seeed_BME280.h"
 
-#include <SHT40AD1BSensor.h>
+#include "SHT40AD1BSensor.h"
 
 extern SH1107Wire display;
 
@@ -410,29 +410,48 @@ bool meassureAirData() {
 }
 
 static void prepareTxFrame(uint8_t port) {
-  // disable vext for battery measurement
+  logger::debug(F("Up-Time Count: %d"), uptimeCount);
+
+  // stop background measurement timer
+  TimerStop(&backgroundMeasureTimer);
+
+  // disable vext for analog measurements
   bool isDisplayEnabled = LoRaWAN.isDisplayEnabled();
   if (digitalRead(Vext) == LOW) {
     if (isDisplayEnabled) {
       LoRaWAN.disableDisplay();
     }
     digitalWrite(Vext, HIGH);
-    Serial.println("disable vext");
     delay(50);
   }
-
   detachInterrupt(WAKE_UP_PIN);
+
+
+  logger::debug(F("Battery: Start to measure"));
   for (int x = 0; x <= 10; x++) {
     batteryVoltage = getBatteryVoltage();
     delay(10);
   }
-  attachInterrupt(WAKE_UP_PIN, onWakeUp, RISING);
+  logger::debug(F("Battery: %d [mV]"), batteryVoltage);
+  logger::debug(F("Battery: Done"));
+
+
+  logger::debug(F("Windspeed: Start to measure"));
+  windSpeedReadingSamples.add(measureWindSpeedVoltage());
+  windSpeedVoltageMedian = windSpeedReadingSamples.getMedian();
+  windSpeedVoltageMax = windSpeedReadingSamples.getHighest();
+  logger::debug(F("Windspeed samples: %d"), windSpeedReadingSamples.getCount());
+  logger::debug(F("Median Windspeed: %d [mV] "), windSpeedVoltageMedian);
+  logger::debug(F("Max Windspeed: %d [mV] "), windSpeedVoltageMax);
+  windSpeedReadingSamples.clear();
+  logger::debug(F("Windspeed: Done"));
+
 
   // enable vext
+  attachInterrupt(WAKE_UP_PIN, onWakeUp, RISING);
   if (digitalRead(Vext) == HIGH) {
     digitalWrite(Vext, LOW);
     delay(50);
-    Serial.println("enable vext");
     if (isDisplayEnabled) {
       initDisplay();
       displayUpTimeCount();
@@ -442,10 +461,9 @@ static void prepareTxFrame(uint8_t port) {
   Wire1.begin();
   delay(100);
 
-  logger::debug(F("Up-Time Count: %d"), uptimeCount);
 
   logger::debug(F("SHT-40: init"));
-  logger::debug("SHT-40: Start to measure");
+  logger::debug(F("SHT-40: Start to measure"));
   float temp, hum;
   for (int x = 0; x < SHT_READINGS; x++) {
     if (shtSensor.GetTemperature(&temp) == SHT40AD1B_STATUS_ERROR) {
@@ -475,24 +493,12 @@ static void prepareTxFrame(uint8_t port) {
   logger::debug(F("Distance: %d [cm]"), int(distance / 10.0));
 
 
-  logger::debug(F("Windspeed: Start to measure"));
-  windSpeedReadingSamples.add(measureWindSpeedVoltage());
-  windSpeedVoltageMedian = windSpeedReadingSamples.getMedian();
-  windSpeedVoltageMax = windSpeedReadingSamples.getHighest();
-
-  logger::debug(F("Windspeed Samples: %d"), windSpeedReadingSamples.getCount());
-  logger::debug(F("Median Windspeed:  %d [mV] "), windSpeedVoltageMedian);
-  logger::debug(F("Max Windspeed:  %d [mV] "), windSpeedVoltageMax);
-
-  blinkRGB(0xcc33ff, 3, 250);  // purple
-  windSpeedReadingSamples.clear();
-  logger::debug(F("Windspeed: Done"));
-
   logger::debug(F("Wind-Direction: Start to measure"));
   windDirection = measureWindDirection();
   logger::debug(F("Wind-Direction:  %d  "), windDirection);
   blinkRGB(0x00ffff, 3, 250);  // cyan
   logger::debug(F("Wind-Direction: Done"));
+
 
   logger::debug(F("Rain Sensor: Start to measure"));
   readRainSensor();
@@ -506,7 +512,6 @@ static void prepareTxFrame(uint8_t port) {
   }
   logger::debug(F("Air Sensor: Done"));
 
-  logger::debug(F("Battery: %d [mV]"), batteryVoltage);
 
   appDataSize = 38;
 
@@ -654,7 +659,7 @@ void prepareBeforeSleep() {
     digitalWrite(RAIN_SENSOR_TX_PIN, HIGH);
   } else {
     // When the RAIN_SENSOR_TX_PIN is et to LOW, the rain sensor should enter it's sleep mode ~20min afterwards.
-    logger::debug(F("Turn Off Rain-Sensor Serial in low power mode"));
+    logger::debug(F("Turn off Rain-Sensor Serial in low power mode"));
     digitalWrite(RAIN_SENSOR_TX_PIN, LOW);
   }
 
@@ -815,10 +820,6 @@ void loop() {
         txDutyCycleTime = appTxDutyCycle + randr(0, APP_TX_DUTYCYCLE_RND);
         LoRaWAN.cycle(txDutyCycleTime);
         prepareBeforeSleep();
-
-
-
-
         logger::info("Go to sleep for: %d sec", (int)(txDutyCycleTime / 1000.0));
         delay(100);
 
@@ -829,7 +830,7 @@ void loop() {
       {
         if (accelWoke) {
           initManualRun();
-          logger::debug(F("Start Sending Cylcle due to wakeup"));
+          logger::debug(F("Start sending cycle due to wakeup"));
           LoRaWAN.txNextPacket();
           accelWoke = false;
         } else {
