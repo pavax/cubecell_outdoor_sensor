@@ -1,4 +1,3 @@
-
 # Cubecell Lorawan Weather Station
 
 ## Setup
@@ -25,7 +24,7 @@ This project uses the following sensors:
 	 * https://rainsensors.com/products/rg-15/
 
  * Wind Speed Sensor 
-   * The Wind-Speed is measured every 60sec. The median and max values are send at every duty Cycle.
+   * The Wind-Speed is measured every 60sec. The median and max values are then send at every duty cycle.
 	 * Protocol: Analog 0-4V (Needs voltage divider to output max 2.4V for the adc input)
 	 * https://www.aliexpress.com/item/1005002627447076.html
 
@@ -40,10 +39,9 @@ This project uses the following sensors:
 	 *  Protocol: I2C
 
 
-## Uplink Decoding
+## Javascript Uplink Decoding
 
-### Javascript
-      function parse(payloadHex, port) {
+     function parse(payloadHex, port) {
 
           function hexToBytes(hex) {
               for (var bytes = [], c = 0; c < hex.length; c += 2)
@@ -78,7 +76,7 @@ This project uses the following sensors:
           msg.windVoltage = (bytes[10] << 24 >> 16 | bytes[11]); // signed
           msg.windVoltageMax = (bytes[12] << 24 >> 16 | bytes[13]); // signed
           msg.rainEventCounter = (bytes[14] << 8) | bytes[15];
-          msg.rainAcc = ((bytes[14] << 8) | bytes[15]) / 100;
+          msg.rainAcc = ((bytes[16] << 8) | bytes[17]) / 100;
           msg.rainEventAcc = ((bytes[18] << 8) | bytes[19]) / 100;
           msg.rainTotalAcc = ((bytes[20] << 8) | bytes[21]) / 100;
           msg.rainRInt = ((bytes[22] << 8) | bytes[23]) / 100;
@@ -92,6 +90,7 @@ This project uses the following sensors:
           
           return msg;
       }
+
 
 ## Downlink Commands
 
