@@ -491,9 +491,7 @@ static void prepareTxFrame(uint8_t port) {
 
   // disable vext for analog measurements
   bool isDisplayEnabled = LoRaWAN.isDisplayEnabled();
-  if (isDisplayEnabled) {
-    LoRaWAN.disableDisplay();
-  }
+  LoRaWAN.disableDisplay();
   turnVextOff();
   detachInterrupt(WAKE_UP_PIN);
 
@@ -515,8 +513,8 @@ static void prepareTxFrame(uint8_t port) {
   windSpeedReadingSamples.add(measureWindSpeedVoltage());
   int windSpeedSamplesCount = windSpeedReadingSamples.getCount();
   int averageMedianSamples = max(1, windSpeedSamplesCount / WIND_SPEED_AVERAGE_SAMPLES_DIVIDER);
-  windSpeedVoltageMax = windSpeedReadingSamples.getHighest();
   windSpeedVoltageAverage = windSpeedReadingSamples.getMedianAverage(averageMedianSamples);
+  windSpeedVoltageMax = windSpeedReadingSamples.getHighest();
   logger::debug(F(" - Windspeed samples count: %d"), windSpeedSamplesCount);
   logger::debug(F(" - Windspeed average-median samples: %d"), averageMedianSamples);
   logger::debug(F(" - Average Windspeed: %d [mV] "), windSpeedVoltageAverage);
@@ -533,9 +531,8 @@ static void prepareTxFrame(uint8_t port) {
   }
   Wire1.begin();
 
-
   //
-  // ULTRASONIC
+  // ULTRASONIC (SERIAL)
   //
   logger::debug(F("Ultrasonic Distance: Start to measure"));
   int distanceResult = measureDistance();
@@ -548,7 +545,7 @@ static void prepareTxFrame(uint8_t port) {
 
 
   //
-  // RAIN SENSOR
+  // RAIN SENSOR (SERIAL)
   //
   logger::debug(F("Rain Sensor: Start to measure"));
   logger::debug(F(" - Rain Counter: %d"), rainEventCounter);
@@ -568,7 +565,7 @@ static void prepareTxFrame(uint8_t port) {
 
 
   //
-  // WIND DIRECTION
+  // WIND DIRECTION (ANALOG)
   //
   logger::debug(F("Wind-Direction: Start to measure"));
   windDirection = measureWindDirection();
@@ -577,7 +574,7 @@ static void prepareTxFrame(uint8_t port) {
 
 
   //
-  // BME
+  // BME (I2C)
   //
   logger::debug(F("BME: Start to measure"));
   if (measureBmeData()) {
@@ -591,7 +588,7 @@ static void prepareTxFrame(uint8_t port) {
   logger::debug(F("BME: Done"));
 
   //
-  // SHT-40
+  // SHT-40 (I2C)
   //
   logger::debug(F("SHT-40: Start to measure"));
   if (measureSht40()) {
@@ -604,7 +601,7 @@ static void prepareTxFrame(uint8_t port) {
   logger::debug(F("SHT-40: Done"));
 
   //
-  // LTR-390
+  // LTR-390 (I2C)
   //
   logger::debug(F("LTR-390: Start to measure"));
   if (measureLtr390()) {
