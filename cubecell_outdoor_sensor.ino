@@ -1,3 +1,5 @@
+#define DISPLAYFONTS_h  // disable shipped display-fonts to use out custom font
+
 #include "LoRaWan_APP.h"
 #include "Arduino.h"
 #include "RunningMedian.h"
@@ -9,25 +11,23 @@
 #include "Seeed_BME280.h"
 #include "cubecell-utils.h"
 #include "SHT40AD1BSensor.h"
+#include <LTR390.h>
 
 extern SH1107Wire display;
 
-#define MIN_DUTY_CYCLE_TIME 1000 * 60     // 1 min
-#define DEFAULT_DUTY_CYCLE 1000 * 60 * 5  // 5 min
-#define DEFAULT_SERIAL_TIMEOUT 2000       // 2 sec
-
-#define WAKE_UP_PIN USER_KEY
-
-#define DEFAULT_LOG_LEVEL logger::Debug  // DEBUG: set to Debug for more logging statements or to None for no logs
+#define DEFAULT_DUTY_CYCLE 1000 * 60 * 5               // 5 min
+#define MIN_DUTY_CYCLE_TIME 1000 * 60                  // 1 min
+#define MIN_BACKGROUND_MEASURE_INTERVAL 1000 * 5       // min 5 sec
+#define DEFAULT_BACKGROUND_MEASURE_INTERVAL 1000 * 15  // every 15 sec
+#define DEFAULT_SERIAL_TIMEOUT 2000                    // 2 sec
+#define WAKE_UP_PIN USER_KEY                           //
+#define DEFAULT_LOG_LEVEL logger::Debug                // DEBUG: set to Debug for more logging statements or to None for no logs
 
 #define SHT_READINGS 10
 
 #define DISTANCE_MAX_READINGS 8
-#define DISTANCE_MAX_WAIT_TIME 4000  // 4 sec
+#define DISTANCE_MAX_WAIT_TIME 1000 * 4  // 4 sec
 #define DISTANCE_MAX_SERIAL_DATA_LENGTH 4
-
-#define MIN_BACKGROUND_MEASURE_INTERVAL 1000 * 5       // min 5 sec
-#define DEFAULT_BACKGROUND_MEASURE_INTERVAL 1000 * 15  // every 15 sec
 
 #define ADC_WINDSPEED_READINGS 20
 #define ADC_WINDSPEED_PIN ADC3
@@ -47,9 +47,14 @@ extern SH1107Wire display;
 #define RAIN_SENSOR_DATA_LINE_PATTERN "%*s %s %[^,] , %*s %s %*s %*s %s %*s %*s %s"
 #define RAIN_SENSOR_EVENT_MAX_FINISHED_WAITING_TIME 4 * 60 * 60 * 1000  // 4h
 
+#define MAX_LTR_READINGS 3
+#define LTR_MAX_WAIT_TIME 1000 * 4  // 4 sec
+
 #define BME_READINGS 5
 
-#define BUFFER_SIZE 128
+#define BUFFER_SIZE RAIN_SENSOR_MAX_SERIAL_DATA_LENGTH
+
+#define I2C_ADDRESS 0x53
 
 static TimerEvent_t backgroundMeasureTimer;
 
@@ -78,9 +83,15 @@ softSerial rainSensorSerial(RAIN_SENSOR_TX_PIN, RAIN_SENSOR_RX_PIN);
 BME280 bme280(&Wire1);
 
 
+/**
+  LTR 390
+*/
+LTR390 ltr390(&Wire1, I2C_ADDRESS);
+
+
 static int32_t temperature, temperature2;
 
-static uint32_t batteryVoltage, uptimeCount, distance, windSpeedVoltageAverage, rainEventCounter, pressure, humidity, humidity2, windSpeedVoltageMax;
+static uint32_t batteryVoltage, uptimeCount, distance, windSpeedVoltageAverage, rainEventCounter, pressure, humidity, humidity2, windSpeedVoltageMax, uvIndex, lux;
 
 static uint8_t rainSerialCode, windDirection;
 
@@ -90,7 +101,7 @@ static bool accelWoke = false;
 
 static bool keepLedStatusEnabled = false;
 
-static double acc, eventAcc, totalAcc, rInt;
+static float acc, eventAcc, totalAcc, rInt;
 
 static char buffer[BUFFER_SIZE];
 
@@ -163,7 +174,7 @@ void processRainSensorDataLine(char dataLine[]) {
 
   acc = atof(accB);
 
-  double currrentEventAcc = atof(eventAccB);
+  float currrentEventAcc = atof(eventAccB);
   if (eventAcc > 0 && currrentEventAcc == 0) {
     logger::debug(F("EventAcc was reset"));
     rainEventCounter = 0;
@@ -208,7 +219,7 @@ bool processRainSerialData() {
   }
 }
 
-void readRainSensor() {
+bool readRainSensor() {
 
   if (scheduledRainCommand != 0) {
     turnOnRGB(0x00FFFF, 500);  // cyan
@@ -222,14 +233,14 @@ void readRainSensor() {
   if (rainEventCounter == 0) {
     logger::debug(F(" - No need to fetch rain-sensor data"));
     rainSerialCode = 0;
-    return;
+    return false;
   }
 
   if (rainEventCounter > 0 && (millis() - lastRainDetectionTime >= RAIN_SENSOR_EVENT_MAX_FINISHED_WAITING_TIME)) {
     logger::debug(F(" - No rain detected since a long time: reset rain event"));
     rainEventCounter = 0;
     rainSerialCode = 8;
-    return;
+    return false;
   }
 
   if (rainEventCounter > 0 && eventAcc == 0) {
@@ -245,42 +256,38 @@ void readRainSensor() {
     sendRainSensorCommand('r');
     successRead = processRainSerialData();
     if (successRead) {
-      turnOnRGB(0xCD00FF, 500);  // purple
       break;
     }
     retryCount++;
-    if (LoRaWAN.isRgbEnabled()) {
-      blinkRGB(COLOR_SEND, 4, 250);  // blink red
-      turnOnRGB(COLOR_SEND, 0);      // red
-    } else {
-      delay(1000);
-    }
+    delay(1000);
   }
 
   if (!successRead) {
     logger::warn(F(" - Read Rain Sensor Timed-out"));
     rainSerialCode = 9;
-    return;
+    return false;
+  } else {
+    return true;
   }
 }
 
 int measureWindDirection() {
-  int measuredVoltage_mV = 0;
+  int measuredVoltage_mv = 0;
   for (int i = 0; i < ADC_WIND_DIRECTION_READINGS; i++) {
-    measuredVoltage_mV = analogReadmV(ADC_WIND_DIRECTION_PIN);
+    measuredVoltage_mv = analogReadmV(ADC_WIND_DIRECTION_PIN);
     delay(10);
   }
   // Convert millivolts to volts
-  float measuredVoltage_V = measuredVoltage_mV / 1000.0;
+  float measuredVoltage_v = measuredVoltage_mv / 1000.0;
 
   // take voltage divider into account
-  float actualVoltage = measuredVoltage_V / ADC_WIND_DIRECTION_VOLTAGE_SCALING_FACTOR;
+  float actualVoltage_v = measuredVoltage_v / ADC_WIND_DIRECTION_VOLTAGE_SCALING_FACTOR;
 
-  int result = convertToWindDirection(actualVoltage);
+  int result = convertToWindDirection(actualVoltage_v);
 
-  logger::debug(F(" - Measured Voltage: %d mV"), int(measuredVoltage_V));
-  logger::debug(F(" - Actual Voltage: %d mV"), int(actualVoltage));
-  logger::debug(F(" - Wind  Direction: %d"), result);
+  logger::debug(F(" - Measured Voltage: %d mV"), int(measuredVoltage_v));
+  logger::debug(F(" - Actual Voltage: %d mV"), int(actualVoltage_v));
+  logger::debug(F(" - Wind Direction: %d"), result);
 
   return result;
 }
@@ -309,17 +316,17 @@ int measureWindSpeedVoltage(bool silentMode = false) {
     delay(10);
   }
 
-  float measuredVoltage_V = (sum / ADC_WINDSPEED_READINGS);
+  float measuredVoltage_mv = (sum / ADC_WINDSPEED_READINGS);
 
   // take voltage divider into account
-  int actualVoltage = measuredVoltage_V / ADC_WINDSPEED_VOLTAGE_SCALING_FACTOR;
+  int actualVoltage_mv = measuredVoltage_mv / ADC_WINDSPEED_VOLTAGE_SCALING_FACTOR;
 
   if (!silentMode) {
-    logger::debug(F(" - Measured Voltage: %d mV"), (int)measuredVoltage_V);
-    logger::debug(F(" - Actual Voltage: %d mV"), actualVoltage);
+    logger::debug(F(" - Measured Voltage: %d mV"), int(measuredVoltage_mv));
+    logger::debug(F(" - Actual Voltage: %d mV"), actualVoltage_mv);
   }
 
-  return actualVoltage;
+  return actualVoltage_mv;
 }
 
 bool measureBmeData() {
@@ -335,11 +342,30 @@ bool measureBmeData() {
     delay(100);
   }
 
-  logger::debug(F(" - Temperature: %d C"), int(temperature2 / 100));
-  logger::debug(F(" - Pressure: %d Pa"), int(pressure / 100));
-  logger::debug(F(" - Humidity: %d %%"), int(humidity2 / 100));
-
   return true;
+}
+
+bool measureSht40() {
+  float temp, hum;
+  bool successFullRead = false;
+
+  for (int x = 0; x < SHT_READINGS; x++) {
+    if (shtSensor.GetTemperature(&temp) == SHT40AD1B_STATUS_ERROR) {
+      logger::err(F(" - Temperature reading failed"));
+    } else {
+      temperature = temp * 100;
+      successFullRead = true;
+    }
+    if (shtSensor.GetHumidity(&hum) == SHT40AD1B_STATUS_ERROR) {
+      logger::err(F(" - Humidity reading failed "));
+    } else {
+      humidity = hum * 100;
+      successFullRead = true;
+    }
+    delay(50);
+  }
+
+  return successFullRead;
 }
 
 int measureDistance() {
@@ -357,7 +383,6 @@ int measureDistance() {
     }
     int distanceReading = readMaxSonarDistance();
     if (distanceReading >= 0) {
-      //logger::debug(F(" - Success read: %d"), distanceReading);
       total += distanceReading;
       numReadings++;
     }
@@ -391,6 +416,74 @@ int readMaxSonarDistance() {
     return -9;
   }
 }
+
+bool measureLtr390() {
+  if (!ltr390.init()) {
+    logger::warn(F(" - Device Error"));
+    return false;
+  }
+
+  ltr390.setGain(LTR390_GAIN_3);                  // Recommended for Lux - x3
+  ltr390.setResolution(LTR390_RESOLUTION_18BIT);  // Recommended for Lux - 18-bit
+  ltr390.setMode(LTR390_MODE_ALS);                // Switch mode to lux measurement
+  lux = fetchLtr390Data();
+
+  delay(100);
+
+  ltr390.setGain(LTR390_GAIN_18);                 // Recommended for UVI - x18
+  ltr390.setResolution(LTR390_RESOLUTION_20BIT);  // Recommended for UVI - 20-bit
+  ltr390.setMode(LTR390_MODE_UVS);                // Switch mode to uv measurement
+  uvIndex = fetchLtr390Data() * 100;
+
+  return true;
+}
+
+
+float fetchLtr390Data() {
+  unsigned long startTime = millis();
+  int numReadings = 0;
+  float total = 0;
+  while (numReadings < MAX_LTR_READINGS) {
+    if ((startTime + LTR_MAX_WAIT_TIME) < millis()) {
+      logger::err("Error: Timed out reading ltr sensor");
+      break;
+    }
+    if (ltr390.newDataAvailable()) {
+      if (ltr390.getMode() == LTR390_MODE_ALS) {
+        total += ltr390.getLux();
+      } else {
+        total += ltr390.getUVI();
+      }
+      numReadings++;
+    }
+  }
+  return total / numReadings;
+}
+
+
+void onRainDetected() {
+  if (deviceState == DEVICE_STATE_SLEEP) {
+    rainEventCounter++;
+    lastRainDetectionTime = millis();
+    logger::debug(F("Rain Sensor: Detected rain"));
+    blinkRGB(0x00FF21, 3, 200);
+    turnOffRGB();
+  }
+}
+
+void onWakeUp() {
+  if (deviceState == DEVICE_STATE_SLEEP && digitalRead(WAKE_UP_PIN) == HIGH) {
+    Serial.println(F("Woke up by WAKE_UP_PIN during sleep"));
+    accelWoke = true;
+    delay(10);
+  }
+}
+
+void onMeasureInBackground() {
+  windSpeedReadingSamples.add(measureWindSpeedVoltage(true));
+  TimerStart(&backgroundMeasureTimer);
+}
+
 
 static void prepareTxFrame(uint8_t port) {
   logger::debug(F("Up-Time Count: %d"), uptimeCount);
@@ -440,6 +533,7 @@ static void prepareTxFrame(uint8_t port) {
   }
   Wire1.begin();
 
+
   //
   // ULTRASONIC
   //
@@ -452,37 +546,47 @@ static void prepareTxFrame(uint8_t port) {
   }
   logger::debug(F("Ultrasonic Distance: Done"));
 
-  //
-  // WIND DIRECTION
-  //
-  logger::debug(F("Wind-Direction: Start to measure"));
-  windDirection = measureWindDirection();
-  logger::debug(F("Wind-Direction:  %d  "), windDirection);
-  blinkRGB(0x00ffff, 3, 250);  // cyan
-  logger::debug(F("Wind-Direction: Done"));
 
   //
   // RAIN SENSOR
   //
   logger::debug(F("Rain Sensor: Start to measure"));
-  readRainSensor();
   logger::debug(F(" - Rain Counter: %d"), rainEventCounter);
-  logger::debug(F(" - Rain Acc: %d"), int(acc * 100));
-  logger::debug(F(" - Rain Event-Acc: %d"), int(eventAcc * 100));
-  logger::debug(F(" - Rain Total-Acc: %d"), int(totalAcc * 100));
-  logger::debug(F(" - Rain RInt: %d"), int(rInt * 100));
-  logger::debug(F(" - Rain Serial-Code: %d"), rainSerialCode);
   long lastRainAgo = (millis() - lastRainDetectionTime) / 1000;
   logger::debug(F(" - Last Rain detection: %d min ago"), int((lastRainAgo / 60.0)));
-  blinkRGB(0xFF1493, 3, 250);  // pink
+  if (readRainSensor()) {
+    logger::debug(F(" - Rain Acc: %d"), int(acc * 100));
+    logger::debug(F(" - Rain Event-Acc: %d"), int(eventAcc * 100));
+    logger::debug(F(" - Rain Total-Acc: %d"), int(totalAcc * 100));
+    logger::debug(F(" - Rain RInt: %d"), int(rInt * 100));
+    logger::debug(F(" - Rain Serial-Code: %d"), rainSerialCode);
+    blinkRGB(0xFF1493, 3, 250);  // pink
+  } else {
+    blinkRGB(COLOR_SEND, 3, 250);  // blink red
+  }
   logger::debug(F("Rain Sensor: Done"));
+
+
+  //
+  // WIND DIRECTION
+  //
+  logger::debug(F("Wind-Direction: Start to measure"));
+  windDirection = measureWindDirection();
+  blinkRGB(0x00ff00, 3, 250);  // green
+  logger::debug(F("Wind-Direction: Done"));
+
 
   //
   // BME
   //
   logger::debug(F("BME: Start to measure"));
   if (measureBmeData()) {
-    blinkRGB(0x0000ff, 3, 250);  // blue
+    logger::debug(F(" - Temperature: %d C"), int(temperature2 / 100));
+    logger::debug(F(" - Pressure: %d Pa"), int(pressure / 100));
+    logger::debug(F(" - Humidity: %d %%"), int(humidity2 / 100));
+    blinkRGB(0xffff00, 3, 250);  // yellow
+  } else {
+    blinkRGB(COLOR_SEND, 3, 250);  // blink red
   }
   logger::debug(F("BME: Done"));
 
@@ -490,27 +594,29 @@ static void prepareTxFrame(uint8_t port) {
   // SHT-40
   //
   logger::debug(F("SHT-40: Start to measure"));
-  float temp, hum;
-  for (int x = 0; x < SHT_READINGS; x++) {
-    if (shtSensor.GetTemperature(&temp) == SHT40AD1B_STATUS_ERROR) {
-      logger::err(F(" - Temperature reading failed"));
-    } else {
-      temperature = temp * 100;
-    }
-    if (shtSensor.GetHumidity(&hum) == SHT40AD1B_STATUS_ERROR) {
-      logger::err(F(" - Humidity reading failed "));
-    } else {
-      humidity = hum * 100;
-    }
-    delay(50);
+  if (measureSht40()) {
+    logger::debug(F(" - Temperature: %d [°C]"), int(temperature / 100.0));
+    logger::debug(F(" - Humidity: %d [%%]"), int(humidity / 100.0));
+    blinkRGB(0xffff00, 3, 250);  // yellow
+  } else {
+    blinkRGB(COLOR_SEND, 3, 250);  // blink red
   }
-  logger::debug(F(" - Temperature: %d [°C]"), int(temperature / 100.0));
-  logger::debug(F(" - Humidity: %d [%%]"), int(humidity / 100.0));
-  blinkRGB(0xffff00, 3, 250);  // yellow
   logger::debug(F("SHT-40: Done"));
 
+  //
+  // LTR-390
+  //
+  logger::debug(F("LTR-390: Start to measure"));
+  if (measureLtr390()) {
+    logger::debug(F(" - Lux: %d"), int(lux));
+    logger::debug(F(" - UV: %d"), int(uvIndex / 100));
+    blinkRGB(0xffff00, 3, 250);  // yellow
+  } else {
+    blinkRGB(COLOR_SEND, 3, 250);  // blink red
+  }
+  logger::debug(F("LTR-390: Done"));
 
-  appDataSize = 38;
+  appDataSize = 43;
 
   appData[0] = highByte(uptimeCount);
   appData[1] = lowByte(uptimeCount);
@@ -573,10 +679,18 @@ static void prepareTxFrame(uint8_t port) {
   appData[36] = tmp >> 8;
   appData[37] = tmp & 0xFF;
 
+  appData[38] = highByte(uvIndex);
+  appData[39] = lowByte(uvIndex);
+
+  tmp = lux;
+  appData[40] = tmp >> 16;
+  appData[41] = tmp >> 8;
+  appData[42] = tmp & 0xFF;
+
   if (LoRaWAN.isDisplayEnabled()) {
     display.clear();
 
-    // PAGE 1
+    // // PAGE 1
     sprintf(buffer, "TMP: %d [C] | HUM: %d [%%]", int(temperature / 100.0), int(humidity / 100.0));
     display.drawString(64, 0, buffer);
 
@@ -593,24 +707,21 @@ static void prepareTxFrame(uint8_t port) {
     delay(5000);
     display.clear();
 
-    // PAGE 2
-    sprintf(buffer, "Rain Counter %d", rainEventCounter);
+    // // PAGE 2
+    sprintf(buffer, "RC: %d | ACC: %d | E: %d", rainEventCounter, int(eventAcc + 0.5), int(eventAcc + 0.5));
     display.drawString(64, 0, buffer);
 
-    sprintf(buffer, "Rain Acc: %d [mm]", (int)(acc + 0.5));
+    sprintf(buffer, "Rain Event-Acc: %d [mm]", (int)(eventAcc + 0.5));
     display.drawString(64, 15, buffer);
 
-    sprintf(buffer, "Rain Event-Acc: %d [mm]", (int)(eventAcc + 0.5));
-    display.drawString(64, 30, buffer);
-
     sprintf(buffer, "Last-Rain: %d [min]", (int)(lastRainAgo / 60.0));
-    display.drawString(64, 45, buffer);
+    display.drawString(64, 30, buffer);
 
     display.display();
     delay(5000);
     display.clear();
 
-    // PAGE 3
+    // // PAGE 3
     sprintf(buffer, "Batt: %d [mV]", batteryVoltage);
     display.drawString(64, 0, buffer);
 
@@ -619,6 +730,9 @@ static void prepareTxFrame(uint8_t port) {
 
     sprintf(buffer, "Pressure: %d [Pa]", int(pressure / 100));
     display.drawString(64, 30, buffer);
+
+    sprintf(buffer, "UV: %d | LUX: %d", int(uvIndex / 10), int(lux));
+    display.drawString(64, 45, buffer);
 
     display.display();
     delay(3000);
@@ -635,30 +749,6 @@ static void prepareTxFrame(uint8_t port) {
   turnVextOff();
   uptimeCount++;
 }
-
-void onRainDetected() {
-  if (deviceState == DEVICE_STATE_SLEEP) {
-    rainEventCounter++;
-    lastRainDetectionTime = millis();
-    logger::debug(F("Rain Sensor: Detected rain"));
-    blinkRGB(0x00FF21, 3, 200);
-    turnOffRGB();
-  }
-}
-
-void onWakeUp() {
-  if (deviceState == DEVICE_STATE_SLEEP && digitalRead(WAKE_UP_PIN) == HIGH) {
-    Serial.println(F("Woke up by WAKE_UP_PIN during sleep"));
-    accelWoke = true;
-    delay(10);
-  }
-}
-
-void onMeasureInBackground() {
-  windSpeedReadingSamples.add(measureWindSpeedVoltage(true));
-  TimerStart(&backgroundMeasureTimer);
-}
-
 
 void initManualRun() {
   logger::set_level(logger::Debug);
