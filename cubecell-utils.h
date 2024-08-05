@@ -1,3 +1,5 @@
+static unsigned long vextTurnedOnTime;
+
 void blinkRGB(uint32_t color, int times = 3, int blinkTime = 500) {
   if (!LoRaWAN.isRgbEnabled()) {
     return;
@@ -11,14 +13,24 @@ void blinkRGB(uint32_t color, int times = 3, int blinkTime = 500) {
 void turnVextOn() {
   if (digitalRead(Vext) == HIGH) {
     digitalWrite(Vext, LOW);
-    delay(100);
+    vextTurnedOnTime = millis();
+    delay(50);
   }
 }
 
 void turnVextOff() {
   if (digitalRead(Vext) == LOW) {
     digitalWrite(Vext, HIGH);
-    delay(100);
+    vextTurnedOnTime = 0;
+    delay(50);
+  }
+}
+
+void waitForMinStartupTimePassed(unsigned long minStartupTime) {
+  if ((vextTurnedOnTime + minStartupTime) > millis()) {
+    unsigned long remainingTime = (vextTurnedOnTime + minStartupTime) - millis();
+    Serial.printf("Sensor not yet ready wait another: %d \r\n", remainingTime);
+    delay(remainingTime);
   }
 }
 
@@ -43,8 +55,7 @@ bool isValidNumber(const char* str, int maxSize) {
 }
 
 
-// PATCHED FONT THAT CONTAINTS NOTT ALL CHARACTERS TO SAVE ROM SPACE
-
+// PATCHED FONT THAT CONTAINTS NOT ALL CHARACTERS IN ORDER TO SAVE ROM SPACE
 const uint8_t ArialMT_Plain_10[] PROGMEM = {
   0x0A,  // Width: 10
   0x0D,  // Height: 13
@@ -468,3 +479,6 @@ const uint8_t ArialMT_Plain_10[] PROGMEM = {
   // 0x00, 0x00, 0xF8, 0x0F, 0x20, 0x02, 0x20, 0x02, 0xC0, 0x01,                                                              // 254
   // 0x20, 0x00, 0xC8, 0x09, 0x00, 0x06, 0xC8, 0x01, 0x20                                                                     // 255
 };
+
+// Pointer to ArialMT_Plain_10
+const uint8_t* ArialMT_Plain_16 = ArialMT_Plain_10;
