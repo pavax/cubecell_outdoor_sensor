@@ -12,16 +12,20 @@
 #include "cubecell-utils.h"
 #include "SHT40AD1BSensor.h"
 #include <LTR390.h>
+#include "watchdog.h"
 
 extern SH1107Wire display;
 
-#define DEFAULT_DUTY_CYCLE 1000 * 60 * 5               // 5 min
-#define MIN_DUTY_CYCLE_TIME 1000 * 60                  // 1 min
-#define MIN_BACKGROUND_MEASURE_INTERVAL 1000 * 5       // min 5 sec
-#define DEFAULT_BACKGROUND_MEASURE_INTERVAL 1000 * 15  // every 15 sec
-#define DEFAULT_SERIAL_TIMEOUT 2000                    // 2 sec
-#define WAKE_UP_PIN USER_KEY                           //
-#define DEFAULT_LOG_LEVEL logger::Debug                // DEBUG: set to Debug for more logging statements or to None for no logs
+#define DEFAULT_DUTY_CYCLE 1000 * 60 * 5                     // 5 min
+#define MIN_DUTY_CYCLE_TIME 1000 * 60                        // 1 min
+#define MIN_BACKGROUND_MEASURE_INTERVAL 1000 * 5             // min 5 sec
+#define DEFAULT_BACKGROUND_MEASURE_INTERVAL 1000 * 15        // every 15 sec
+#define DEFAULT_SERIAL_TIMEOUT 2000                          // 2 sec
+#define WAKE_UP_PIN USER_KEY                                 //
+#define DEFAULT_LOG_LEVEL logger::Debug                      // DEBUG: set to Debug for more logging statements or to None for no logs
+#define DEFAULT_CONFIRMATION_INTERVAL_TIMES 6                // confirm every 6th uplink
+#define WATCH_DOG_INTERVAL 1000 * 60 * 3                     // check after 3min
+#define CHAR_BUFFER_SIZE RAIN_SENSOR_MAX_SERIAL_DATA_LENGTH  // max char buffer size
 
 #define SHT_READINGS 10
 
@@ -44,30 +48,30 @@ extern SH1107Wire display;
 #define RAIN_SENSOR_INTERUPT_PIN GPIO6
 #define RAIN_SENSOR_TX_PIN GPIO4
 #define RAIN_SENSOR_RX_PIN GPIO7
+#define RAIN_SENSOR_RESOLUTION 0.2
 #define RAIN_SENSOR_MAX_SERIAL_DATA_LENGTH 80
 #define RAIN_SENSOR_DATA_LINE_PATTERN "%*s %s %[^,] , %*s %s %*s %*s %s %*s %*s %s"
 #define RAIN_SENSOR_EVENT_MAX_FINISHED_WAITING_TIME 4 * 60 * 60 * 1000  // 4h
 
-#define MAX_LTR_READINGS 5
+#define LTR_MAX_READINGS 5
 #define LTR_MAX_WAIT_TIME 1000 * 4  // 4 sec
+#define LTR_390_I2C_ADDRESS 0x53
 
 #define BME_READINGS 5
 
-#define BUFFER_SIZE RAIN_SENSOR_MAX_SERIAL_DATA_LENGTH
-
-#define I2C_ADDRESS 0x53
-
-static TimerEvent_t backgroundMeasureTimer;
-
-SHT40AD1BSensor shtSensor(&Wire1);
+#define COLOR_YELLOW 0xffff00
 
 RunningMedian windSpeedReadingSamples = RunningMedian(WIND_SPEED_MAX_SAMPLES);
 
 softSerial rainSensorSerial(RAIN_SENSOR_TX_PIN, RAIN_SENSOR_RX_PIN);
 
+SHT40AD1BSensor shtSensor(&Wire1);
+
 BME280 bme280(&Wire1);
 
-LTR390 ltr390(&Wire1, I2C_ADDRESS);
+LTR390 ltr390(&Wire1, LTR_390_I2C_ADDRESS);
+
+static TimerEvent_t backgroundMeasureTimer;
 
 static int32_t temperature, temperature2;
 
@@ -79,11 +83,13 @@ static unsigned long lastRainDetectionTime = 0;
 
 static bool accelWoke = false;
 
-static bool keepLedStatusEnabled = false;
+static unsigned int txConfirmationIntervalTimes = DEFAULT_CONFIRMATION_INTERVAL_TIMES;
+
+static bool keepRgbEnabled = false;
 
 static float acc, eventAcc, totalAcc, rInt;
 
-static char buffer[BUFFER_SIZE];
+static char buffer[CHAR_BUFFER_SIZE];
 
 static char scheduledRainCommand = 0;
 
@@ -211,10 +217,9 @@ int readRainSensor() {
     sendRainSensorCommand(scheduledRainCommand);
     scheduledRainCommand = 0;
     delay(5000);
-    turnOffRGB();
   }
 
-  if (rainEventCounter == 0) {
+  if (uptimeCount > 0 && rainEventCounter == 0) {
     logger::debug(F(" - No need to fetch rain-sensor data"));
     rainSerialCode = 0;
     return 0;
@@ -227,7 +232,7 @@ int readRainSensor() {
     return 0;
   }
 
-  if (rainEventCounter > 0 && eventAcc == 0) {
+  if (uptimeCount == 0 || (rainEventCounter > 0 && eventAcc == 0)) {
     logger::debug(F(" - Establish first serial command"));
     sendRainSensorCommand('z');  // send dummy command as the first one is swallowed
     delay(500);
@@ -250,6 +255,12 @@ int readRainSensor() {
     logger::warn(F(" - Read Rain Sensor Timed-out"));
     rainSerialCode = 9;
     return -1;
+  }
+
+  // init rainEventCounter the first time when started up and there is eventAcc
+  // this might hapen when the hardware was reset while it's raining
+  if (uptimeCount == 0 && eventAcc > 0) {
+    rainEventCounter = min(1, int(eventAcc / RAIN_SENSOR_RESOLUTION));
   }
 
   return 1;
@@ -279,7 +290,7 @@ int measureWindDirection() {
 }
 
 int convertToWindDirection(float voltage) {
-  // measured reading are based on 3.3V
+  // measured voltage reading are based on 3.3V
   if (voltage < 0.1) return 1;
   else if (voltage < 0.5) return 2;
   else if (voltage < 1.0) return 3;
@@ -290,9 +301,8 @@ int convertToWindDirection(float voltage) {
   else return 8;
 }
 
-
 int measureWindSpeedVoltage(bool silentMode = false) {
-  long sum = 0;
+  uint sum = 0;
   for (int i = 0; i < ADC_WINDSPEED_READINGS; i++) {
     int voltage = abs(analogReadmV(ADC_WINDSPEED_PIN));
     if (voltage <= 42) {
@@ -360,7 +370,7 @@ int measureDistance() {
   Serial1.flush();
 
   int numReadings = 0;
-  int total = 0;
+  uint sum = 0;
 
   while (numReadings < DISTANCE_MAX_READINGS) {
     if ((startTime + DISTANCE_MAX_WAIT_TIME) < millis()) {
@@ -369,7 +379,7 @@ int measureDistance() {
     }
     int distanceReading = readMaxSonarDistance();
     if (distanceReading >= 0) {
-      total += distanceReading;
+      sum += distanceReading;
       numReadings++;
     }
   }
@@ -379,7 +389,7 @@ int measureDistance() {
     return -1;
   }
 
-  return total / numReadings;
+  return sum / numReadings;
 }
 
 int readMaxSonarDistance() {
@@ -431,18 +441,18 @@ bool measureLtr390() {
 float fetchLtr390Data() {
   const unsigned long startTime = millis();
   const ltr390_mode_t mode = ltr390.getMode();
-  int numReadings = 0;
-  float total = 0;
-  while (numReadings < MAX_LTR_READINGS) {
+  uint numReadings = 0;
+  float sum = 0;
+  while (numReadings < LTR_MAX_READINGS) {
     if ((startTime + LTR_MAX_WAIT_TIME) < millis()) {
-      logger::warn("Error: Timed out reading ltr sensor");
+      logger::warn("Error: Timed out reading LTR sensor");
       break;
     }
     if (ltr390.newDataAvailable()) {
       if (mode == LTR390_MODE_ALS) {
-        total += ltr390.getLux();
+        sum += ltr390.getLux();
       } else {
-        total += ltr390.getUVI();
+        sum += ltr390.getUVI();
       }
       numReadings++;
     }
@@ -454,7 +464,7 @@ float fetchLtr390Data() {
     return -1;
   }
 
-  return total / numReadings;
+  return sum / numReadings;
 }
 
 void onRainDetected() {
@@ -463,7 +473,7 @@ void onRainDetected() {
     lastRainDetectionTime = millis();
     logger::debug(F("Rain Sensor: Detected rain"));
     blinkRGB(0x00FF21, 3, 200);
-    turnOffRGB();
+    turnOffRGB();  // also turns of vext if on
   }
 }
 
@@ -481,6 +491,7 @@ void onMeasureInBackground() {
 }
 
 static void prepareTxFrame(uint8_t port) {
+
   logger::info(F("Up-Time Count: %d"), uptimeCount);
   TimerStop(&backgroundMeasureTimer);
 
@@ -560,6 +571,8 @@ static void prepareTxFrame(uint8_t port) {
     distance = distanceResult;
     logger::info(F(" - Distance: %d [cm]"), int(distance / 10.0));
     blinkRGB(0x0000ff, 3, 250);  // blue
+  } else {
+    blinkRGB(COLOR_SEND, 3, 250);  // blink red
   }
   logger::info(F("Ultrasonic Distance: Done"));
 
@@ -572,7 +585,7 @@ static void prepareTxFrame(uint8_t port) {
     logger::info(F(" - Temperature: %d C"), int(temperature2 / 100));
     logger::info(F(" - Pressure: %d Pa"), int(pressure / 100));
     logger::info(F(" - Humidity: %d %%"), int(humidity2 / 100));
-    blinkRGB(0xffff00, 3, 250);  // yellow
+    blinkRGB(COLOR_YELLOW, 3, 250);  // blink yellow
   } else {
     blinkRGB(COLOR_SEND, 3, 250);  // blink red
   }
@@ -586,7 +599,7 @@ static void prepareTxFrame(uint8_t port) {
   if (measureSht40()) {
     logger::info(F(" - Temperature: %d [°C]"), int(temperature / 100.0));
     logger::info(F(" - Humidity: %d [%%]"), int(humidity / 100.0));
-    blinkRGB(0xffff00, 3, 250);  // yellow
+    blinkRGB(COLOR_YELLOW, 3, 250);  // blink yellow
   } else {
     blinkRGB(COLOR_SEND, 3, 250);  // blink red
   }
@@ -600,7 +613,7 @@ static void prepareTxFrame(uint8_t port) {
   if (measureLtr390()) {
     logger::info(F(" - Lux: %d"), int(lux));
     logger::info(F(" - UV: %d"), int(uvIndex / 100));
-    blinkRGB(0xffff00, 3, 250);  // yellow
+    blinkRGB(COLOR_YELLOW, 3, 250);  // blink yellow
   } else {
     blinkRGB(COLOR_SEND, 3, 250);  // blink red
   }
@@ -747,7 +760,6 @@ static void prepareTxFrame(uint8_t port) {
 
   Wire1.end();
   turnVextOff();
-  uptimeCount++;
 }
 
 void initManualRun() {
@@ -789,19 +801,21 @@ void displaySplash() {
 
   display.drawString(58, 12, F("Weather Station"));
   display.drawHorizontalLine(0, 33, 128);
-  display.drawString(58, 40, F("Version 1.1"));
+  display.drawString(58, 40, F("Version 1.2"));
   display.drawString(58, 52, F("(c) Patrick Dobler"));
 
   display.display();
 }
 
+void prepareBeforeSend() {
+  isTxConfirmed = uptimeCount % txConfirmationIntervalTimes == 0;
+  logger::debug(F("isTxConfirmed: %d"), isTxConfirmed);
+  uptimeCount++;
+}
+
 void prepareBeforeSleep() {
   if (!isTxConfirmed) {
-    if (!keepLedStatusEnabled) {
-      LoRaWAN.disableRgb();
-    }
-    LoRaWAN.disableDisplay();
-    turnVextOff();
+    turnOffForSleep();
   }
 
   if (rainEventCounter > 0) {
@@ -821,22 +835,42 @@ void prepareBeforeSleep() {
   logger::set_level(DEFAULT_LOG_LEVEL);
 }
 
+void handleStatusLightEnabled(bool keepEnabled = keepRgbEnabled) {
+  keepRgbEnabled = keepEnabled;
+  if (keepRgbEnabled && !LoRaWAN.isRgbEnabled()) {
+    logger::info(F("enable status rgb"));
+    LoRaWAN.enableRgb();
+  } else if (!keepRgbEnabled && LoRaWAN.isRgbEnabled()) {
+    logger::info(F("disable status rgb"));
+    LoRaWAN.disableRgb();
+  }
+}
+
+void turnOffForSleep() {
+  handleStatusLightEnabled();
+  LoRaWAN.disableDisplay();
+  stopWatchDog();
+  turnVextOff();
+}
+
 void setupRainsensor() {
   rainSensorSerial.begin(9600);
   //rainSensorSerial.setTimeout(5000);
   delay(5000);  // wait for sensor to start up
-  //sendRainSensorCommand('k');
+  //sendRainSensorCommand('k'); // reset
   //processRainSerialData();
+
   rainSensorSerial.setTimeout(2000);
 
-  sendRainSensorCommand('p');
-  sendRainSensorCommand('l');
-  sendRainSensorCommand('m');
+  sendRainSensorCommand('p');  // polling
+  sendRainSensorCommand('l');  // low resolution (0.2 mm )
+  sendRainSensorCommand('m');  // metric
   processRainSerialData();
 }
 
 void setup() {
   Serial.begin(115200);
+
   logger::set_serial(Serial);
   Serial1.begin(9600);
 
@@ -855,6 +889,8 @@ void setup() {
 
   TimerInit(&backgroundMeasureTimer, onMeasureInBackground);
   TimerSetValue(&backgroundMeasureTimer, backgroundMeasureInterval);
+
+  initWatchDog(WATCH_DOG_INTERVAL);
 
   initManualRun();
 
@@ -889,8 +925,10 @@ void loop() {
       }
     case DEVICE_STATE_SEND:
       {
+        startWatchDog();
         displayUpTimeCount();
         prepareTxFrame(appPort);
+        prepareBeforeSend();
         LoRaWAN.send();
         deviceState = DEVICE_STATE_CYCLE;
         break;
@@ -901,8 +939,8 @@ void loop() {
         txDutyCycleTime = appTxDutyCycle + randr(0, APP_TX_DUTYCYCLE_RND);
         LoRaWAN.cycle(txDutyCycleTime);
         prepareBeforeSleep();
-        logger::info("Go to sleep for: %d sec", (int)(txDutyCycleTime / 1000.0));
-        delay(100);
+        logger::info("Go to sleep for: %d sec", int(txDutyCycleTime / 1000.0));
+        delay(20);
 
         deviceState = DEVICE_STATE_SLEEP;
         break;
@@ -911,17 +949,14 @@ void loop() {
       {
         if (accelWoke) {
           initManualRun();
+
           logger::debug(F("Start sending cycle due to wakeup"));
           LoRaWAN.txNextPacket();
           accelWoke = false;
         } else {
           //LoRaWAN.displayAck();
           if (isTxConfirmed && LoRaWAN.hasReceivedAck()) {
-            if (!keepLedStatusEnabled) {
-              LoRaWAN.disableRgb();
-            }
-            LoRaWAN.disableDisplay();
-            turnVextOff();
+            turnOffForSleep();
             LoRaWAN.resetReceivedAck();
           }
           LoRaWAN.sleep();
@@ -933,16 +968,6 @@ void loop() {
         deviceState = DEVICE_STATE_INIT;
         break;
       }
-  }
-}
-
-void setKeepStatusLightEnabled(bool keepEnabled) {
-  keepLedStatusEnabled = keepEnabled;
-  logger::info(F("keepLedStatusEnabled: %s "), keepLedStatusEnabled ? "true" : "false");
-  if (keepLedStatusEnabled) {
-    LoRaWAN.enableRgb();
-  } else {
-    LoRaWAN.disableRgb();
   }
 }
 
@@ -969,10 +994,10 @@ void setKeepStatusLightEnabled(bool keepEnabled) {
 //+JOIN=1                   start join
 //+DelCDKEY=1               to delete the CDKEY
 //+DefaultSet=1             to reset parameter to Default setting
-//+KeepLedStatusEnabled=1   Keep Status Lights enabled
+//+KeepRgbEnabled=1         Keep Status Lights enabled
 bool checkUserAt(char* cmd, char* content) {
-  if (strcmp(cmd, "KeepLedStatusEnabled") == 0) {
-    setKeepStatusLightEnabled(strcmp(content, "1") == 0 || strcmp(content, "true") == 0);
+  if (strcmp(cmd, "keepRgbEnabled") == 0) {
+    handleStatusLightEnabled(strcmp(content, "1") == 0 || strcmp(content, "true") == 0);
     return true;
   }
   return false;
@@ -996,16 +1021,15 @@ void downLinkDataHandle(McpsIndication_t* mcpsIndication) {
     Serial.print(appTxDutyCycle);
     Serial.println(F("ms"));
   } else if (mcpsIndication->Port == 5 && mcpsIndication->BufferSize > 0) {
-    // handle keep status light
-    bool keepStatusLightEnabled = mcpsIndication->Buffer[0] != 0;
-    setKeepStatusLightEnabled(keepStatusLightEnabled);
+    // handle keep rgb light
+    bool keepRgbEnabled = mcpsIndication->Buffer[0] != 0;
+    handleStatusLightEnabled(keepRgbEnabled);
   } else if (mcpsIndication->Port == 6 && mcpsIndication->BufferSize > 0) {
     // handle scheduledRainCommand
     scheduledRainCommand = char(mcpsIndication->Buffer[0]);
     Serial.print(F("scheduled rain command: "));
     Serial.println(scheduledRainCommand);
-  }
-  if (mcpsIndication->Port == 7 && mcpsIndication->BufferSize > 0) {
+  } else if (mcpsIndication->Port == 7 && mcpsIndication->BufferSize > 0) {
     // handle backgroundMeasureInterval
     int newIntervalTime = mcpsIndication->Buffer[1] | (mcpsIndication->Buffer[0] << 8);
     Serial.printf("new interval time received: %d sec\r\n", newIntervalTime);
@@ -1013,6 +1037,11 @@ void downLinkDataHandle(McpsIndication_t* mcpsIndication) {
     Serial.print(F("new backgroundMeasureInterval received: "));
     Serial.print(backgroundMeasureInterval);
     Serial.println(F("ms"));
+  } else if (mcpsIndication->Port == 8 && mcpsIndication->BufferSize > 0) {
+    // handle txConfirmationIntervalTimes
+    int newIntervalTime = mcpsIndication->Buffer[1] | (mcpsIndication->Buffer[0] << 8);
+    txConfirmationIntervalTimes = newIntervalTime;
+    Serial.printf("txConfirmationIntervalTimes set to %d \r\n", txConfirmationIntervalTimes);
   } else if (mcpsIndication->Port == 9) {
     // handle restart
     Serial.println(F("Reset"));

@@ -36,7 +36,7 @@ void waitForMinStartupTimePassed(unsigned long minStartupTime) {
 
 bool isValidNumber(const char* str, int maxSize) {
   if (strlen(str) > maxSize) {
-    Serial.println("Serial Error: Too many digits");
+    Serial.println("Serial Error: Too many digits in input");
     return false;
   }
   if (*str == '\0') {
@@ -45,7 +45,7 @@ bool isValidNumber(const char* str, int maxSize) {
   }
   while (*str != '\0') {
     if (!isdigit(*str)) {
-      Serial.print("Serial Error: non digit char found: ");
+      Serial.print("Serial Error: non digit char found in input");
       Serial.println(*str);
       return false;
     }
